@@ -49,7 +49,7 @@ class UnsupervisedLoss(object):
 		self.Q = 10
 		self.N_WALKS = 6  # 正采样走的次数（也就是需要采集的正样本数量）
 		self.WALK_LEN = 1  # 正采样走的距离，这里是1，确保是1阶邻域
-		self.N_WALK_LEN = 5  # 负采样走的距离，为了避免采样到邻接，因此比正采样走的更加远
+		self.N_WALK_LEN = 5  # 负采样走的距离，为了避免采样到邻接，因此比正采样走的更加远, 这里使用5，代表采集5阶邻域以外的点为负样本
 		self.MARGIN = 3
 		self.adj_lists = adj_lists
 		self.train_nodes = train_nodes
@@ -162,16 +162,16 @@ class UnsupervisedLoss(object):
 			num_neg: 想要的负样本个数
 		"""
 		for node in nodes:
-			neighbors = set([node])
-			frontier = set([node])
+			neighbors = set([node])  # 存储经过遍历的节点
+			frontier = set([node])  # 存储每次遍历中新出现的节点
 			for i in range(self.N_WALK_LEN):
-				current = set()
+				current = set()  #
 				for outer in frontier:
-					current |= self.adj_lists[int(outer)]  # 取当前遍历的节点与遍历过的节点的并集
-				frontier = current - neighbors
-				neighbors |= current
-			far_nodes = set(self.train_nodes) - neighbors
-			neg_samples = random.sample(far_nodes, num_neg) if num_neg < len(far_nodes) else far_nodes
+					current |= self.adj_lists[int(outer)]  # 取当前遍历的节点的邻域节点
+				frontier = current - neighbors  # 存储当前遍历节点的所有非邻域节点
+				neighbors |= current  # 将当前点的邻域放入邻域集合中
+			far_nodes = set(self.train_nodes) - neighbors  # 得到所有非领域节点
+			neg_samples = random.sample(far_nodes, num_neg) if num_neg < len(far_nodes) else far_nodes  # 挑选5阶邻域之外的节点
 			self.negtive_pairs.extend([(node, neg_node) for neg_node in neg_samples])
 			self.node_negtive_pairs[node] = [(node, neg_node) for neg_node in neg_samples]
 		return self.negtive_pairs
@@ -271,6 +271,7 @@ class GraphSage(nn.Module):
 		lower_layer_nodes = list(nodes_batch)
 		nodes_batch_layers = [(lower_layer_nodes,)]
 		# self.dc.logger.info('get_unique_neighs.')
+		# 每一层都是 随机 选取的邻域
 		for i in range(self.num_layers):
 			lower_samp_neighs, lower_layer_nodes_dict, lower_layer_nodes= self._get_unique_neighs_list(lower_layer_nodes)
 			nodes_batch_layers.insert(0, (lower_layer_nodes, lower_samp_neighs, lower_layer_nodes_dict))
@@ -279,8 +280,8 @@ class GraphSage(nn.Module):
 
 		pre_hidden_embs = self.raw_features
 		for index in range(1, self.num_layers+1):
-			nb = nodes_batch_layers[index][0]
-			pre_neighs = nodes_batch_layers[index-1]
+			nb = nodes_batch_layers[index][0]   # 这批节点及其所有邻域节点
+			pre_neighs = nodes_batch_layers[index-1]  # 上一波节点的信息
 			# self.dc.logger.info('aggregate_feats.')
 			aggregate_feats = self.aggregate(nb, pre_hidden_embs, pre_neighs)
 			sage_layer = getattr(self, 'sage_layer'+str(index))
@@ -300,32 +301,48 @@ class GraphSage(nn.Module):
 		return index
 
 	def _get_unique_neighs_list(self, nodes, num_sample=10):
+		"""
+		parameters:
+			nodes: 这一批节点
+			num_sample: 采样个数
+		return:
+			这批数据所有节点的邻域信息（包含自己）
+			打乱后每个节点的索引和值
+			所有邻域的一个大集合，最后转化成了列表
+		"""
 		_set = set
-		to_neighs = [self.adj_lists[int(node)] for node in nodes]
+		to_neighs = [self.adj_lists[int(node)] for node in nodes]  # 存储这批节点的左右领域信息
+		# 如果指定了采样个数，那么就随机选取指定个数条节点的领域信息
 		if not num_sample is None:
 			_sample = random.sample
 			samp_neighs = [_set(_sample(to_neigh, num_sample)) if len(to_neigh) >= num_sample else to_neigh for to_neigh in to_neighs]
 		else:
 			samp_neighs = to_neighs
-		samp_neighs = [samp_neigh | set([nodes[i]]) for i, samp_neigh in enumerate(samp_neighs)]
-		_unique_nodes_list = list(set.union(*samp_neighs))
-		i = list(range(len(_unique_nodes_list)))
+		samp_neighs = [samp_neigh | set([nodes[i]]) for i, samp_neigh in enumerate(samp_neighs)]  # 将节点自己也作为邻域添加进去
+		_unique_nodes_list = list(set.union(*samp_neighs))  # 将所有邻域记录集合并起来，然后转化成一个列表
+		i = list(range(len(_unique_nodes_list)))  # 创建列表中每个元素对应的索引
 		unique_nodes = dict(list(zip(_unique_nodes_list, i)))
 		return samp_neighs, unique_nodes, _unique_nodes_list
 
 	def aggregate(self, nodes, pre_hidden_embs, pre_neighs, num_sample=10):
+		"""
+		parameters:
+			nodes: 这一次需要聚合的节点及其邻域信息
+			pre_hidden_embs:  上一次聚合得到的所有节点的嵌入表示
+			pre_neighs:  上一波被聚合的节点信息
+		"""
 		unique_nodes_list, samp_neighs, unique_nodes = pre_neighs
 
 		assert len(nodes) == len(samp_neighs)
-		indicator = [(nodes[i] in samp_neighs[i]) for i in range(len(samp_neighs))]
+		indicator = [(nodes[i] in samp_neighs[i]) for i in range(len(samp_neighs))]  # 检测这次需要聚合的节点是否都在上次聚合的信息中
 		assert (False not in indicator)
 		if not self.gcn:
-			samp_neighs = [(samp_neighs[i]-set([nodes[i]])) for i in range(len(samp_neighs))]
+			samp_neighs = [(samp_neighs[i]-set([nodes[i]])) for i in range(len(samp_neighs))]  # 如果没有使用GCN，那么就吧邻域中包含的需要训练的节点剔除
 		# self.dc.logger.info('2')
 		if len(pre_hidden_embs) == len(unique_nodes):
 			embed_matrix = pre_hidden_embs
 		else:
-			embed_matrix = pre_hidden_embs[torch.LongTensor(unique_nodes_list)]
+			embed_matrix = pre_hidden_embs[torch.LongTensor(unique_nodes_list)]  # 选择对应节点的嵌入表示
 		# self.dc.logger.info('3')
 		mask = torch.zeros(len(samp_neighs), len(unique_nodes))
 		column_indices = [unique_nodes[n] for samp_neigh in samp_neighs for n in samp_neigh]
