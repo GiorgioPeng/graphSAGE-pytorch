@@ -47,9 +47,9 @@ class UnsupervisedLoss(object):
 	def __init__(self, adj_lists, train_nodes, device):
 		super(UnsupervisedLoss, self).__init__()
 		self.Q = 10
-		self.N_WALKS = 6
-		self.WALK_LEN = 1
-		self.N_WALK_LEN = 5
+		self.N_WALKS = 6  # 正采样走的次数（也就是需要采集的正样本数量）
+		self.WALK_LEN = 1  # 正采样走的距离，这里是1，确保是1阶邻域
+		self.N_WALK_LEN = 5  # 负采样走的距离，为了避免采样到邻接，因此比正采样走的更加远
 		self.MARGIN = 3
 		self.adj_lists = adj_lists
 		self.train_nodes = train_nodes
@@ -133,6 +133,11 @@ class UnsupervisedLoss(object):
 
 
 	def extend_nodes(self, nodes, num_neg=6):
+		"""
+		parameters:
+			nodes: 一批节点
+			num_neg: 负采样数量
+		"""
 		self.positive_pairs = []
 		self.node_positive_pairs = {}
 		self.negtive_pairs = []
@@ -151,13 +156,18 @@ class UnsupervisedLoss(object):
 		return self._run_random_walks(nodes)
 
 	def get_negtive_nodes(self, nodes, num_neg):
+		"""
+		parameters:
+			nodes: 一批节点
+			num_neg: 想要的负样本个数
+		"""
 		for node in nodes:
 			neighbors = set([node])
 			frontier = set([node])
 			for i in range(self.N_WALK_LEN):
 				current = set()
 				for outer in frontier:
-					current |= self.adj_lists[int(outer)]
+					current |= self.adj_lists[int(outer)]  # 取当前遍历的节点与遍历过的节点的并集
 				frontier = current - neighbors
 				neighbors |= current
 			far_nodes = set(self.train_nodes) - neighbors
@@ -167,20 +177,24 @@ class UnsupervisedLoss(object):
 		return self.negtive_pairs
 
 	def _run_random_walks(self, nodes):
+		"""
+		parameters:
+			nodes: 一批节点
+		"""
 		for node in nodes:
-			if len(self.adj_lists[int(node)]) == 0:
+			if len(self.adj_lists[int(node)]) == 0:  # 如果当前遍历的节点没有邻接节点，那么直接跳过
 				continue
 			cur_pairs = []
 			for i in range(self.N_WALKS):
 				curr_node = node
 				for j in range(self.WALK_LEN):
-					neighs = self.adj_lists[int(curr_node)]
-					next_node = random.choice(list(neighs))
+					neighs = self.adj_lists[int(curr_node)]  # 读取当前节点的邻域节点
+					next_node = random.choice(list(neighs))  # 从所有邻域节点中随机选择一个
 					# self co-occurrences are useless
-					if next_node != node and next_node in self.train_nodes:
-						self.positive_pairs.append((node,next_node))
+					if next_node != node and next_node in self.train_nodes:  # 如果没有选择到自己，并且选择节点处在训练集中
+						self.positive_pairs.append((node,next_node))  # 记录这一对节点
 						cur_pairs.append((node,next_node))
-					curr_node = next_node
+					curr_node = next_node  # 游走的起点转化成刚刚选择的节点
 
 			self.node_positive_pairs[node] = cur_pairs
 		return self.positive_pairs
@@ -222,6 +236,17 @@ class SageLayer(nn.Module):
 class GraphSage(nn.Module):
 	"""docstring for GraphSage"""
 	def __init__(self, num_layers, input_size, out_size, raw_features, adj_lists, device, gcn=False, agg_func='MEAN'):
+		"""
+		parameters:
+			num_layers: 网络层数
+			input_size: 节点向量特征维度
+			out_size: 嵌入完之后的节点的表示维度
+			raw_features: 所有节点输入向量表示
+			adj_lists: 图的邻接矩阵
+			device: cpu|gpu
+			gcn: 是否使用GCN
+			agg_func: 聚合函数类型
+		"""
 		super(GraphSage, self).__init__()
 
 		self.input_size = input_size
